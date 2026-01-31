@@ -1,0 +1,89 @@
+# GEPA Configuration for LinkedIn Browser Automation Skill Optimization
+#
+# This configures GEPA (Generative Evolutionary Prompt Adaptation) to optimize
+# the LinkedIn skill file for better reliability and speed.
+#
+# The skill content is written to ~/.claude/skills/linkedin.com/SKILL.md
+# inside Kernel browser VMs, where Claude Code automatically discovers it.
+
+[prompt_learning]
+algorithm = "gepa"
+task_app_url = "http://localhost:8030"
+task_app_id = "linkedin_bench"
+
+# Policy configuration - the proposer model for mutations
+# Note: The actual task execution uses Claude Code via the task app
+[prompt_learning.policy]
+model = "gpt-4o"
+provider = "openai"
+inference_mode = "synth_hosted"
+
+# Timeout for rollouts (browser automation takes longer than code execution)
+[prompt_learning.policy.config]
+timeout = 400  # 400 seconds per rollout (browser automation is slow)
+
+# Initial prompt template
+# The skill_content wildcard is what GEPA optimizes
+[prompt_learning.initial_prompt]
+id = "linkedin_skill"
+name = "LinkedIn Browser Automation Skill"
+
+# The skill content that gets written to SKILL.md
+# GEPA will mutate and evolve this content
+[[prompt_learning.initial_prompt.messages]]
+role = "system"
+pattern = "{skill_content}"
+order = 0
+
+# The task prompt (varies per task, not optimized)
+[[prompt_learning.initial_prompt.messages]]
+role = "user"
+pattern = "{task_prompt}"
+order = 1
+
+[prompt_learning.initial_prompt.wildcards]
+skill_content = "REQUIRED"
+task_prompt = "REQUIRED"
+
+# GEPA algorithm settings
+[prompt_learning.gepa]
+env_name = "linkedin_bench"
+proposer_type = "synth"
+proposer_effort = "MEDIUM"
+proposer_output_tokens = "SLOW"
+
+# Rollout budget and parallelism
+[prompt_learning.gepa.rollout]
+budget = 30                  # Total rollouts to run
+max_concurrent = 10          # Parallel rollouts (matches pool size)
+minibatch_size = 3           # Rollouts per minibatch
+timeout = 600                # 10 minutes per rollout (browser automation is slow)
+
+# Evaluation seeds (task indices)
+# Need at least 13 seeds total (10 for pareto_set + 3 for feedback)
+# We cycle through our 3 tasks multiple times
+[prompt_learning.gepa.evaluation]
+seeds = [0, 1, 2, 0, 1, 2, 0, 1, 2, 0, 1, 2, 0]  # 13 seeds cycling through 3 tasks
+validation_seeds = [0, 1, 2]
+validation_top_k = 1
+
+# Mutation settings
+[prompt_learning.gepa.mutation]
+rate = 0.5
+
+# Population settings
+[prompt_learning.gepa.population]
+initial_size = 4             # Starting population
+num_generations = 3          # Number of evolution cycles
+children_per_generation = 4  # New variants per generation
+crossover_rate = 0.5
+
+# Archive settings
+[prompt_learning.gepa.archive]
+size = 20
+pareto_set_size = 10
+
+# Token budget
+[prompt_learning.gepa.token]
+max_spend_usd = 25.0         # Budget for GEPA optimization
+counting_model = "claude-3-5-sonnet-20241022"
