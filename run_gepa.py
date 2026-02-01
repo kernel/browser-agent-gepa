@@ -62,12 +62,14 @@ def wait_for_health(host: str, port: int, api_key: str = "", timeout: float = 30
 
 async def main():
     parser = argparse.ArgumentParser(description="Run GEPA optimization for LinkedIn skill")
-    parser.add_argument("--local", action="store_true", help="Use localhost:8000 Synth backend")
+    parser.add_argument("--local", action="store_true", help="Use local Synth backend")
+    parser.add_argument("--local-port", type=int, default=8080, help="Local backend port (default: 8080)")
     parser.add_argument("--port", type=int, default=8030, help="Task app port (default: 8030)")
     parser.add_argument("--config", type=str, default="linkedin_gepa.toml", help="GEPA config file")
     parser.add_argument("--generations", type=int, help="Override number of generations")
     parser.add_argument("--budget", type=int, help="Override rollout budget")
     parser.add_argument("--timeout", type=int, default=120, help="Agent timeout per rollout")
+    parser.add_argument("--backend-url", type=str, help="Override backend URL (default: prod)")
     args = parser.parse_args()
 
     # Check environment
@@ -78,7 +80,12 @@ async def main():
         sys.exit(1)
 
     synth_api_key = os.environ["SYNTH_API_KEY"]
-    backend_url = "http://localhost:8000" if args.local else "https://api.usesynth.ai"
+    if args.backend_url:
+        backend_url = args.backend_url.rstrip("/")
+    elif args.local:
+        backend_url = f"http://localhost:{args.local_port}"
+    else:
+        backend_url = "https://api.usesynth.ai"
 
     print("=" * 60)
     print("GEPA OPTIMIZATION - LinkedIn Browser Automation Skill")
@@ -121,6 +128,16 @@ async def main():
     config["prompt_learning"]["initial_prompt"]["wildcards"]["skill_content"] = initial_skill
     print(f"Initial skill content: {len(initial_skill)} chars")
 
+    # Also inject initial skill content into the baseline_context_override so
+    # the Rust backend can populate context_overrides with the real initial value
+    # (rather than the placeholder "REQUIRED").
+    gepa_cfg = config.get("prompt_learning", {}).get("gepa", {})
+    baseline_co = gepa_cfg.get("baseline_context_override", {})
+    file_artifacts = baseline_co.get("file_artifacts", {})
+    for path in list(file_artifacts.keys()):
+        if "skill" in path.lower():
+            file_artifacts[path] = initial_skill
+
     print(f"Generations: {config['prompt_learning']['gepa']['population']['num_generations']}")
     print(f"Budget: {config['prompt_learning']['gepa']['rollout']['budget']}")
     print(f"Timeout: {args.timeout}s")
@@ -156,18 +173,17 @@ async def main():
         # Manual override (e.g., ngrok)
         task_app_url = task_app_url_override
         print(f"Task app URL (from env): {task_app_url}")
-    elif args.local:
-        # Local backend can reach localhost directly
-        task_app_url = f"http://localhost:{port}"
-        print(f"Task app URL (local): {task_app_url}")
     else:
-        # Use SynthTunnel to expose local task app to remote backend
+        # Use SynthTunnel to expose local task app to the backend.
+        # For --local, the tunnel connects to the local relay; otherwise production.
         print("\nCreating SynthTunnel...")
         from synth_ai.core.tunnels import TunneledLocalAPI
 
         tunnel = await TunneledLocalAPI.create(
             local_port=port,
             api_key=synth_api_key,
+            backend_url=backend_url,
+            env_api_key=environment_api_key,
         )
         task_app_url = tunnel.url
         worker_token = tunnel.worker_token
@@ -187,17 +203,19 @@ async def main():
             print("ERROR: synth-ai SDK not installed. Install with: pip install synth-ai")
             sys.exit(1)
 
-        # Use worker_token for SynthTunnel, environment_api_key otherwise
+        # Always pass task_app_api_key so the backend has it for X-API-Key auth.
+        # For SynthTunnel, also pass worker_token for relay auth.
+        # The backend's inject_task_app_api_key handles secure credential
+        # injection at job start time for both tunnel modes.
         job_kwargs = {
             "config_dict": config,
             "backend_url": backend_url,
             "api_key": synth_api_key,
             "skip_health_check": True,
+            "task_app_api_key": environment_api_key,
         }
         if worker_token:
             job_kwargs["task_app_worker_token"] = worker_token
-        else:
-            job_kwargs["task_app_api_key"] = environment_api_key
 
         job = PromptLearningJob.from_dict(**job_kwargs)
 
@@ -222,8 +240,10 @@ async def main():
             if result.raw:
                 print(f"Raw response: {json.dumps(result.raw, indent=2)[:2000]}")
         else:
-            if result.best_score is not None:
-                print(f"Best score: {result.best_score:.4f}")
+            # Try common attribute names for the best score
+            best_score = getattr(result, 'best_score', None) or getattr(result, 'best_reward', None)
+            if best_score is not None:
+                print(f"Best score: {best_score:.4f}")
 
             # Save the optimized skill
             if result.best_prompt:
