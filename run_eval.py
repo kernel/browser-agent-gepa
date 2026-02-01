@@ -177,7 +177,7 @@ async def run_seeds(seeds: list[int], timeout: int = 120):
 
 
 async def ensure_pool_exists():
-    """Make sure the browser pool exists before running."""
+    """Make sure the browser pool exists before running (optional - falls back to direct browsers)."""
     from kernel import AsyncKernel
 
     api_key = os.environ.get("KERNEL_API_KEY")
@@ -187,12 +187,12 @@ async def ensure_pool_exists():
 
     client = AsyncKernel(api_key=api_key)
 
-    print(f"Ensuring browser pool '{DEFAULT_POOL_NAME}' exists...")
+    print(f"Checking browser pool '{DEFAULT_POOL_NAME}'...")
     try:
         await get_or_create_pool(client, DEFAULT_POOL_NAME, "linkedin", 10)
         print("Pool ready.")
     except Exception as e:
-        print(f"Warning: Could not ensure pool: {e}")
+        print(f"Pool not available ({e}), will use direct browser creation instead.")
 
 
 def main():

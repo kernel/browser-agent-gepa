@@ -40,7 +40,7 @@ SKILL_PATH = f"{SKILL_DIR}/SKILL.md"
 
 # Browser pool configuration
 DEFAULT_POOL_NAME = "agent-gepa"
-DEFAULT_POOL_SIZE = 10
+DEFAULT_POOL_SIZE = 20
 
 
 async def get_or_create_pool(
@@ -215,6 +215,8 @@ async def run_claude_code(
     anthropic_api_key: str,
     timeout: int = 120,
     verbose: bool = True,
+    interceptor_base_url: str | None = None,
+    interceptor_auth_token: str | None = None,
 ) -> RunResult:
     """
     Run Claude Code with a task prompt in the Kernel browser VM.
@@ -226,6 +228,8 @@ async def run_claude_code(
         anthropic_api_key: API key for Claude
         timeout: Maximum seconds to wait for completion
         verbose: Print output as it streams
+        interceptor_base_url: If set, route inference through Synth interceptor
+        interceptor_auth_token: Auth token for the interceptor
 
     Returns:
         RunResult with output, exit code, and timing
@@ -248,10 +252,20 @@ async def run_claude_code(
     escaped = escaped.replace('"', '\\"')
     
     # Build script that runs Claude with streaming JSON output
+    # When interceptor is configured, route through Synth API interceptor
+    if interceptor_base_url:
+        auth_token = interceptor_auth_token or anthropic_api_key
+        env_block = f"""export ANTHROPIC_BASE_URL='{interceptor_base_url}'
+export ANTHROPIC_AUTH_TOKEN='{auth_token}'"""
+        if verbose:
+            print(f"  Using interceptor: {interceptor_base_url}", flush=True)
+    else:
+        env_block = f"export ANTHROPIC_API_KEY='{anthropic_api_key}'"
+
     script = f'''#!/bin/bash
 export HOME=/home/kernel
 export PATH="$HOME/.local/bin:$PATH"
-export ANTHROPIC_API_KEY='{anthropic_api_key}'
+{env_block}
 cd /home/kernel
 claude -p --verbose --output-format stream-json --dangerously-skip-permissions "{escaped}"
 '''
@@ -428,6 +442,8 @@ async def run_task_in_kernel(
     timeout: int = 120,
     api_key: str | None = None,
     anthropic_api_key: str | None = None,
+    interceptor_base_url: str | None = None,
+    interceptor_auth_token: str | None = None,
 ) -> RunResult:
     """
     High-level function to run a task in a Kernel browser.
@@ -446,6 +462,8 @@ async def run_task_in_kernel(
         timeout: Maximum seconds for Claude execution
         api_key: Kernel API key (uses env if not provided)
         anthropic_api_key: Anthropic API key (uses env if not provided)
+        interceptor_base_url: If set, route inference through Synth interceptor
+        interceptor_auth_token: Auth token for the interceptor
 
     Returns:
         RunResult with output, timing, and exit code
@@ -462,12 +480,26 @@ async def run_task_in_kernel(
     import httpx
     client = AsyncKernel(api_key=api_key, timeout=httpx.Timeout(300.0))
 
-    # Acquire a browser from the pool
-    print(f"Acquiring browser from pool '{pool_name}'...")
-    acquire_result = await client.browser_pools.acquire(pool_name)
-    session_id = acquire_result.session_id
-    print(f"  Acquired session: {session_id}")
-    print(f"  Live view: {acquire_result.browser_live_view_url}")
+    # Try pool first, fall back to direct browser creation
+    use_pool = True
+    session_id = None
+    try:
+        print(f"Acquiring browser from pool '{pool_name}'...")
+        acquire_result = await client.browser_pools.acquire(pool_name)
+        session_id = acquire_result.session_id
+        print(f"  Acquired session: {session_id}")
+        print(f"  Live view: {acquire_result.browser_live_view_url}")
+    except Exception as e:
+        print(f"  Pool unavailable ({e}), creating browser directly...")
+        use_pool = False
+        browser = await client.browsers.create(
+            profile={"name": "linkedin"},
+            stealth=True,
+            timeout_seconds=max(timeout + 120, 600),
+        )
+        session_id = browser.session_id
+        print(f"  Created session: {session_id}")
+        print(f"  Live view: {browser.browser_live_view_url}")
 
     try:
         # Ensure browser is ready
@@ -486,15 +518,30 @@ async def run_task_in_kernel(
             task_prompt,
             anthropic_api_key,
             timeout=timeout,
+            interceptor_base_url=interceptor_base_url,
+            interceptor_auth_token=interceptor_auth_token,
         )
 
         return result
 
     finally:
-        # Release browser back to pool with reuse=True to preserve VM state
-        print(f"Releasing browser {session_id} back to pool...")
-        try:
-            await client.browser_pools.release(pool_name, session_id=session_id, reuse=True)
-            print("  Released with reuse=True")
-        except Exception as e:
-            print(f"  Warning: Failed to release browser: {e}")
+        if use_pool:
+            # Release browser back to pool with reuse=True to preserve VM state
+            print(f"Releasing browser {session_id} back to pool...")
+            try:
+                await client.browser_pools.release(pool_name, session_id=session_id, reuse=True)
+                print("  Released with reuse=True")
+            except Exception as e:
+                print(f"  Warning: Failed to release browser: {e}")
+        else:
+            # Delete the directly-created browser
+            print(f"Deleting browser {session_id}...")
+            try:
+                import httpx as _hx
+                _hx.delete(
+                    f"https://api.onkernel.com/browsers/{session_id}",
+                    headers={"Authorization": f"Bearer {api_key}"},
+                )
+                print("  Deleted")
+            except Exception as e:
+                print(f"  Warning: cleanup failed: {e}")

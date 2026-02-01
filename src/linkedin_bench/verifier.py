@@ -45,6 +45,9 @@ async def verify_with_llm(
     if not api_key:
         raise ValueError("ANTHROPIC_API_KEY not set")
 
+    # Support OpenAI fallback for verification when Anthropic credits are exhausted
+    openai_api_key = os.environ.get("OPENAI_API_KEY")
+
     client = anthropic.AsyncAnthropic(api_key=api_key)
 
     prompt = f"""You are verifying a browser automation task result.
@@ -73,16 +76,43 @@ Return ONLY a JSON object (no markdown, no explanation outside the JSON):
   "reason": "brief explanation of your judgment"
 }}"""
 
+    content = None
     try:
         response = await client.messages.create(
             model="claude-sonnet-4-20250514",
             max_tokens=500,
             messages=[{"role": "user", "content": prompt}],
         )
-
-        # Parse the response
         content = response.content[0].text.strip()
+    except Exception as anthropic_err:
+        # Fallback to OpenAI if Anthropic fails (e.g. credit exhaustion)
+        if openai_api_key:
+            print(f"  [VERIFIER] Anthropic failed ({anthropic_err}), falling back to OpenAI")
+            try:
+                import openai
+                oai_client = openai.AsyncOpenAI(api_key=openai_api_key)
+                oai_response = await oai_client.chat.completions.create(
+                    model="gpt-4o-mini",
+                    max_tokens=500,
+                    messages=[{"role": "user", "content": prompt}],
+                )
+                content = oai_response.choices[0].message.content.strip()
+            except Exception as oai_err:
+                return VerificationResult(
+                    correct=False,
+                    extracted_answer=None,
+                    reason=f"Verification error (both Anthropic and OpenAI failed): {anthropic_err} / {oai_err}",
+                    raw_score=0.0,
+                )
+        else:
+            return VerificationResult(
+                correct=False,
+                extracted_answer=None,
+                reason=f"Verification error: {anthropic_err}",
+                raw_score=0.0,
+            )
 
+    try:
         # Try to extract JSON from the response
         # Handle cases where model might wrap in markdown code blocks
         json_match = re.search(r"\{[\s\S]*\}", content)

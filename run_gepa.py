@@ -183,6 +183,7 @@ async def main():
             local_port=port,
             api_key=synth_api_key,
             backend_url=backend_url,
+            env_api_key=environment_api_key,
         )
         task_app_url = tunnel.url
         worker_token = tunnel.worker_token

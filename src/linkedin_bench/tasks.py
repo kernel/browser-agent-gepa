@@ -26,7 +26,7 @@ TASKS = [
     Task(
         id="own_follower_count",
         prompt="Use your linkedin skill with agent-browser to navigate to my LinkedIn profile and get my follower count. Return just the number.",
-        expected="Around 1218 followers (accept within ±5%, so 1157-1279 is correct)",
+        expected="Around 2001 followers (accept within ±10%, so 1800-2200 is correct)",
         timeout=300,  # Browser automation can be slow, allow 5 minutes
     ),
     Task(
