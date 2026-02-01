@@ -45,12 +45,32 @@ order = 1
 skill_content = "REQUIRED"
 task_prompt = "REQUIRED"
 
+# RLM v1 verifier - uses model-based scoring for rollout evaluation
+[prompt_learning.verifier]
+mode = "verifier"
+model = "gemini-2.5-flash"
+
 # GEPA algorithm settings
 [prompt_learning.gepa]
 env_name = "linkedin_bench"
 proposer_type = "synth"
 proposer_effort = "MEDIUM"
 proposer_output_tokens = "SLOW"
+
+# Unified optimization: mutate skill files via context_overrides instead of
+# injecting into the system prompt. The proposer's instruction_text becomes the
+# content of the mutable_files, delivered to the task app as file artifacts.
+[prompt_learning.gepa.unified_optimization]
+enable_task_app_context_overrides = true
+optimization_target = "context_only"
+mutable_files = ["~/.claude/skills/linkedin.com/SKILL.md"]
+allow_preflight_script = false
+allow_env_vars = false
+
+# Baseline context override — initial file artifact values.
+# run_gepa.py injects the actual initial skill content at runtime.
+[prompt_learning.gepa.baseline_context_override.file_artifacts]
+"~/.claude/skills/linkedin.com/SKILL.md" = "REQUIRED"
 
 # Rollout budget and parallelism
 [prompt_learning.gepa.rollout]
